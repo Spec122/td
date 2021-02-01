@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -20,7 +20,7 @@
 #include "td/telegram/telegram_api.h"
 
 namespace td {
-namespace logevent {
+namespace log_event {
 
 class SecretChatEvent : public LogEventBase<SecretChatEvent> {
  public:
@@ -34,12 +34,8 @@ class SecretChatEvent : public LogEventBase<SecretChatEvent> {
 
   virtual Type get_type() const = 0;
 
-  static constexpr LogEvent::HandlerType get_handler_type() {
-    return LogEvent::HandlerType::SecretChats;
-  }
-
   static constexpr int32 version() {
-    return 2;
+    return 3;
   }
 
   template <class F>
@@ -296,7 +292,7 @@ class InboundSecretMessage : public SecretChatLogEventBase<InboundSecretMessage>
   }
 
   StringBuilder &print(StringBuilder &sb) const override {
-    return sb << "[Logevent InboundSecretMessage " << tag("id", logevent_id()) << tag("chat_id", chat_id)
+    return sb << "[Logevent InboundSecretMessage " << tag("id", log_event_id()) << tag("chat_id", chat_id)
               << tag("date", date) << tag("auth_key_id", format::as_hex(auth_key_id)) << tag("message_id", message_id)
               << tag("my_in_seq_no", my_in_seq_no) << tag("my_out_seq_no", my_out_seq_no)
               << tag("his_in_seq_no", his_in_seq_no) << tag("message", to_string(decrypted_message_layer))
@@ -330,6 +326,7 @@ class OutboundSecretMessage : public SecretChatLogEventBase<OutboundSecretMessag
   bool is_rewritable = false;
   // should notify our parent about state of this message (using context and random_id)
   bool is_external = false;
+  bool is_silent = false;
 
   tl_object_ptr<secret_api::DecryptedMessageAction> action;
   uint64 crc = 0;  // DEBUG;
@@ -353,13 +350,14 @@ class OutboundSecretMessage : public SecretChatLogEventBase<OutboundSecretMessag
     store(my_out_seq_no, storer);
     store(his_in_seq_no, storer);
 
-    bool has_action = static_cast<bool>(action);
+    bool has_action = action != nullptr;
     BEGIN_STORE_FLAGS();
     STORE_FLAG(is_sent);
     STORE_FLAG(need_notify_user);
     STORE_FLAG(has_action);
     STORE_FLAG(is_rewritable);
     STORE_FLAG(is_external);
+    STORE_FLAG(is_silent);
     END_STORE_FLAGS();
 
     if (has_action) {
@@ -390,6 +388,7 @@ class OutboundSecretMessage : public SecretChatLogEventBase<OutboundSecretMessag
     PARSE_FLAG(has_action);
     PARSE_FLAG(is_rewritable);
     PARSE_FLAG(is_external);
+    PARSE_FLAG(is_silent);
     END_PARSE_FLAGS();
 
     if (has_action) {
@@ -399,7 +398,7 @@ class OutboundSecretMessage : public SecretChatLogEventBase<OutboundSecretMessag
   }
 
   StringBuilder &print(StringBuilder &sb) const override {
-    return sb << "[Logevent OutboundSecretMessage " << tag("id", logevent_id()) << tag("chat_id", chat_id)
+    return sb << "[Logevent OutboundSecretMessage " << tag("id", log_event_id()) << tag("chat_id", chat_id)
               << tag("is_sent", is_sent) << tag("need_notify_user", need_notify_user)
               << tag("is_rewritable", is_rewritable) << tag("is_external", is_external) << tag("message_id", message_id)
               << tag("random_id", random_id) << tag("my_in_seq_no", my_in_seq_no) << tag("my_out_seq_no", my_out_seq_no)
@@ -411,21 +410,34 @@ class CloseSecretChat : public SecretChatLogEventBase<CloseSecretChat> {
  public:
   static constexpr Type type = SecretChatEvent::Type::CloseSecretChat;
   int32 chat_id = 0;
+  bool delete_history = false;
+  bool is_already_discarded = false;
 
   template <class StorerT>
   void store(StorerT &storer) const {
     using td::store;
+    BEGIN_STORE_FLAGS();
+    STORE_FLAG(delete_history);
+    STORE_FLAG(is_already_discarded);
+    END_STORE_FLAGS();
     store(chat_id, storer);
   }
 
   template <class ParserT>
   void parse(ParserT &parser) {
     using td::parse;
+    if (parser.version() >= 3) {
+      BEGIN_PARSE_FLAGS();
+      PARSE_FLAG(delete_history);
+      PARSE_FLAG(is_already_discarded);
+      END_PARSE_FLAGS();
+    }
     parse(chat_id, parser);
   }
 
   StringBuilder &print(StringBuilder &sb) const override {
-    return sb << "[Logevent CloseSecretChat " << tag("id", logevent_id()) << tag("chat_id", chat_id) << "]";
+    return sb << "[Logevent CloseSecretChat " << tag("id", log_event_id()) << tag("chat_id", chat_id)
+              << tag("delete_history", delete_history) << tag("is_already_discarded", is_already_discarded) << "]";
   }
 };
 
@@ -453,7 +465,7 @@ class CreateSecretChat : public SecretChatLogEventBase<CreateSecretChat> {
   }
 
   StringBuilder &print(StringBuilder &sb) const override {
-    return sb << "[Logevent CreateSecretChat " << tag("id", logevent_id()) << tag("chat_id", random_id)
+    return sb << "[Logevent CreateSecretChat " << tag("id", log_event_id()) << tag("chat_id", random_id)
               << tag("user_id", user_id) << "]";
   }
 };
@@ -477,10 +489,10 @@ void SecretChatEvent::downcast_call(Type type, F &&f) {
       break;
   }
 }
-}  // namespace logevent
+}  // namespace log_event
 
-inline auto create_storer(logevent::SecretChatEvent &event) {
-  return logevent::detail::StorerImpl<logevent::SecretChatEvent>(event);
+inline auto create_storer(log_event::SecretChatEvent &event) {
+  return log_event::detail::StorerImpl<log_event::SecretChatEvent>(event);
 }
 
 }  // namespace td

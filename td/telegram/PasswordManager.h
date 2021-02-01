@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -151,7 +151,7 @@ class PasswordManager : public NetQueryCallback {
   };
 
   optional<secure_storage::Secret> secret_;
-  double secret_expire_date_ = 0;
+  double secret_expire_time_ = 0;
 
   TempPasswordState temp_password_state_;
   Promise<TempState> create_temp_password_promise_;

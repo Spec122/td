@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -7,7 +7,6 @@
 #pragma once
 
 #include "td/telegram/logevent/SecretChatEvent.h"
-#include "td/telegram/PtsManager.h"
 #include "td/telegram/SecretChatActor.h"
 #include "td/telegram/SecretChatId.h"
 
@@ -17,6 +16,7 @@
 #include "td/actor/actor.h"
 #include "td/actor/PromiseFuture.h"
 
+#include "td/utils/common.h"
 #include "td/utils/Time.h"
 
 #include <map>
@@ -30,13 +30,12 @@ class SecretChatsManager : public Actor {
  public:
   explicit SecretChatsManager(ActorShared<> parent);
 
-  // Proxy query to corrensponding SecretChatActor.
-  // Look for more info in SecretChatActor.h
+  // Proxy query to corrensponding SecretChatActor
   void on_update_chat(tl_object_ptr<telegram_api::updateEncryption> update);
   void on_new_message(tl_object_ptr<telegram_api::EncryptedMessage> &&message_ptr, Promise<Unit> &&promise);
 
   void create_chat(int32 user_id, int64 user_access_hash, Promise<SecretChatId> promise);
-  void cancel_chat(SecretChatId, Promise<> promise);
+  void cancel_chat(SecretChatId secret_chat_id, bool delete_history, Promise<> promise);
   void send_message(SecretChatId secret_chat_id, tl_object_ptr<secret_api::decryptedMessage> message,
                     tl_object_ptr<telegram_api::InputEncryptedFile> file, Promise<> promise);
   void send_message_action(SecretChatId secret_chat_id, tl_object_ptr<secret_api::SendMessageAction> action);
@@ -64,11 +63,11 @@ class SecretChatsManager : public Actor {
   void flush_pending_chat_updates();
   void do_update_chat(tl_object_ptr<telegram_api::updateEncryption> update);
 
-  void replay_inbound_message(unique_ptr<logevent::InboundSecretMessage> message);
-  void add_inbound_message(unique_ptr<logevent::InboundSecretMessage> message);
-  void replay_outbound_message(unique_ptr<logevent::OutboundSecretMessage> message);
-  void replay_close_chat(unique_ptr<logevent::CloseSecretChat> message);
-  void replay_create_chat(unique_ptr<logevent::CreateSecretChat> message);
+  void replay_inbound_message(unique_ptr<log_event::InboundSecretMessage> message);
+  void add_inbound_message(unique_ptr<log_event::InboundSecretMessage> message);
+  void replay_outbound_message(unique_ptr<log_event::OutboundSecretMessage> message);
+  void replay_close_chat(unique_ptr<log_event::CloseSecretChat> message);
+  void replay_create_chat(unique_ptr<log_event::CreateSecretChat> message);
 
   unique_ptr<SecretChatActor::Context> make_secret_chat_context(int32 id);
   ActorId<SecretChatActor> get_chat_actor(int32 id);

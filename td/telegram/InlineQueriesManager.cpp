@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -40,6 +40,7 @@
 
 #include "td/telegram/net/DcId.h"
 
+#include "td/utils/algorithm.h"
 #include "td/utils/base64.h"
 #include "td/utils/buffer.h"
 #include "td/utils/HttpUrl.h"
@@ -66,18 +67,15 @@ class GetInlineBotResultsQuery : public Td::ResultHandler {
   explicit GetInlineBotResultsQuery(Promise<Unit> &&promise) : promise_(std::move(promise)) {
   }
 
-  NetQueryRef send(UserId bot_user_id, tl_object_ptr<telegram_api::InputUser> bot_input_user, DialogId dialog_id,
-                   Location user_location, const string &query, const string &offset, uint64 query_hash) {
+  NetQueryRef send(UserId bot_user_id, tl_object_ptr<telegram_api::InputUser> bot_input_user,
+                   tl_object_ptr<telegram_api::InputPeer> input_peer, Location user_location, const string &query,
+                   const string &offset, uint64 query_hash) {
+    CHECK(input_peer != nullptr);
     bot_user_id_ = bot_user_id;
     query_hash_ = query_hash;
     int32 flags = 0;
     if (!user_location.empty()) {
       flags |= GET_INLINE_BOT_RESULTS_FLAG_HAS_LOCATION;
-    }
-
-    auto input_peer = td->messages_manager_->get_input_peer(dialog_id, AccessRights::Read);
-    if (input_peer == nullptr) {
-      input_peer = make_tl_object<telegram_api::inputPeerEmpty>();
     }
 
     auto net_query = G()->net_query_creator().create(telegram_api::messages_getInlineBotResults(
@@ -163,6 +161,7 @@ class SetInlineBotResultsQuery : public Td::ResultHandler {
 InlineQueriesManager::InlineQueriesManager(Td *td, ActorShared<> parent) : td_(td), parent_(std::move(parent)) {
   drop_inline_query_result_timeout_.set_callback(on_drop_inline_query_result_timeout_callback);
   drop_inline_query_result_timeout_.set_callback_data(static_cast<void *>(this));
+  next_inline_query_time_ = Time::now();
 }
 
 void InlineQueriesManager::tear_down() {
@@ -214,7 +213,7 @@ tl_object_ptr<telegram_api::inputBotInlineMessageID> InlineQueriesManager::get_i
 string InlineQueriesManager::get_inline_message_id(
     tl_object_ptr<telegram_api::inputBotInlineMessageID> &&input_bot_inline_message_id) {
   if (input_bot_inline_message_id == nullptr) {
-    return "";
+    return string();
   }
   LOG(INFO) << "Got inline message id: " << to_string(input_bot_inline_message_id);
 
@@ -257,8 +256,16 @@ Result<tl_object_ptr<telegram_api::InputBotInlineMessage>> InlineQueriesManager:
   }
   if (constructor_id == td_api::inputMessageLocation::ID) {
     TRY_RESULT(location, process_input_message_location(std::move(input_message_content)));
-    return make_tl_object<telegram_api::inputBotInlineMessageMediaGeo>(flags, location.first.get_input_geo_point(),
-                                                                       location.second, std::move(input_reply_markup));
+    if (location.heading != 0) {
+      flags |= telegram_api::inputBotInlineMessageMediaGeo::HEADING_MASK;
+    }
+    if (location.live_period != 0) {
+      flags |= telegram_api::inputBotInlineMessageMediaGeo::PERIOD_MASK;
+      flags |= telegram_api::inputBotInlineMessageMediaGeo::PROXIMITY_NOTIFICATION_RADIUS_MASK;
+    }
+    return make_tl_object<telegram_api::inputBotInlineMessageMediaGeo>(
+        flags, location.location.get_input_geo_point(), location.heading, location.live_period,
+        location.proximity_alert_radius, std::move(input_reply_markup));
   }
   if (constructor_id == td_api::inputMessageVenue::ID) {
     TRY_RESULT(venue, process_input_message_venue(std::move(input_message_content)));
@@ -751,13 +758,34 @@ uint64 InlineQueriesManager::send_inline_query(UserId bot_user_id, DialogId dial
     return 0;
   }
 
-  bool is_broadcast_channel =
-      dialog_id.get_type() == DialogType::Channel &&
-      td_->contacts_manager_->get_channel_type(dialog_id.get_channel_id()) == ChannelType::Broadcast;
+  auto input_peer = td_->messages_manager_->get_input_peer(dialog_id, AccessRights::Read);
+  if (input_peer == nullptr) {
+    input_peer = make_tl_object<telegram_api::inputPeerEmpty>();
+  }
+
+  auto peer_type = [&] {
+    switch (input_peer->get_id()) {
+      case telegram_api::inputPeerEmpty::ID:
+        return 0;
+      case telegram_api::inputPeerSelf::ID:
+        return 1;
+      case telegram_api::inputPeerChat::ID:
+        return 2;
+      case telegram_api::inputPeerUser::ID:
+      case telegram_api::inputPeerUserFromMessage::ID:
+        return dialog_id == DialogId(bot_user_id) ? 3 : 4;
+      case telegram_api::inputPeerChannel::ID:
+      case telegram_api::inputPeerChannelFromMessage::ID:
+        return 5 + static_cast<int>(td_->contacts_manager_->get_channel_type(dialog_id.get_channel_id()));
+      default:
+        UNREACHABLE();
+        return -1;
+    }
+  }();
 
   uint64 query_hash = std::hash<std::string>()(trim(query));
   query_hash = query_hash * 2023654985u + bot_user_id.get();
-  query_hash = query_hash * 2023654985u + static_cast<uint64>(is_broadcast_channel);
+  query_hash = query_hash * 2023654985u + static_cast<uint64>(peer_type);
   query_hash = query_hash * 2023654985u + std::hash<std::string>()(offset);
   if (r_bot_data.ok().need_location) {
     query_hash = query_hash * 2023654985u + static_cast<uint64>(user_location.get_latitude() * 1e4);
@@ -782,8 +810,8 @@ uint64 InlineQueriesManager::send_inline_query(UserId bot_user_id, DialogId dial
     pending_inline_query_->promise.set_error(Status::Error(406, "Request cancelled"));
   }
 
-  pending_inline_query_ = make_unique<PendingInlineQuery>(
-      PendingInlineQuery{query_hash, bot_user_id, dialog_id, user_location, query, offset, std::move(promise)});
+  pending_inline_query_ = make_unique<PendingInlineQuery>(PendingInlineQuery{
+      query_hash, bot_user_id, std::move(input_peer), user_location, query, offset, std::move(promise)});
 
   loop();
 
@@ -807,9 +835,9 @@ void InlineQueriesManager::loop() {
       }
       sent_query_ =
           td_->create_handler<GetInlineBotResultsQuery>(std::move(pending_inline_query_->promise))
-              ->send(pending_inline_query_->bot_user_id, std::move(bot_input_user), pending_inline_query_->dialog_id,
-                     pending_inline_query_->user_location, pending_inline_query_->query, pending_inline_query_->offset,
-                     pending_inline_query_->query_hash);
+              ->send(pending_inline_query_->bot_user_id, std::move(bot_input_user),
+                     std::move(pending_inline_query_->input_peer), pending_inline_query_->user_location,
+                     pending_inline_query_->query, pending_inline_query_->offset, pending_inline_query_->query_hash);
 
       next_inline_query_time_ = now + INLINE_QUERY_DELAY_MS * 1e-3;
     }
@@ -864,7 +892,12 @@ tl_object_ptr<td_api::minithumbnail> copy(const td_api::minithumbnail &obj) {
 
 template <>
 tl_object_ptr<td_api::photoSize> copy(const td_api::photoSize &obj) {
-  return make_tl_object<td_api::photoSize>(obj.type_, copy(obj.photo_), obj.width_, obj.height_);
+  return make_tl_object<td_api::photoSize>(obj.type_, copy(obj.photo_), obj.width_, obj.height_,
+                                           vector<int32>(obj.progressive_sizes_));
+}
+
+static tl_object_ptr<td_api::photoSize> copy_photo_size(const tl_object_ptr<td_api::photoSize> &obj) {
+  return copy(obj);
 }
 
 template <>
@@ -892,10 +925,6 @@ tl_object_ptr<td_api::thumbnail> copy(const td_api::thumbnail &obj) {
   return make_tl_object<td_api::thumbnail>(std::move(format), obj.width_, obj.height_, copy(obj.file_));
 }
 
-static tl_object_ptr<td_api::photoSize> copy_photo_size(const tl_object_ptr<td_api::photoSize> &obj) {
-  return copy(obj);
-}
-
 template <>
 tl_object_ptr<td_api::MaskPoint> copy(const td_api::MaskPoint &obj) {
   switch (obj.get_id()) {
@@ -916,6 +945,44 @@ tl_object_ptr<td_api::MaskPoint> copy(const td_api::MaskPoint &obj) {
 template <>
 tl_object_ptr<td_api::maskPosition> copy(const td_api::maskPosition &obj) {
   return make_tl_object<td_api::maskPosition>(copy(obj.point_), obj.x_shift_, obj.y_shift_, obj.scale_);
+}
+
+template <>
+tl_object_ptr<td_api::point> copy(const td_api::point &obj) {
+  return make_tl_object<td_api::point>(obj.x_, obj.y_);
+}
+
+template <>
+tl_object_ptr<td_api::VectorPathCommand> copy(const td_api::VectorPathCommand &obj) {
+  switch (obj.get_id()) {
+    case td_api::vectorPathCommandLine::ID: {
+      auto &command = static_cast<const td_api::vectorPathCommandLine &>(obj);
+      return make_tl_object<td_api::vectorPathCommandLine>(copy(command.end_point_));
+    }
+    case td_api::vectorPathCommandCubicBezierCurve::ID: {
+      auto &command = static_cast<const td_api::vectorPathCommandCubicBezierCurve &>(obj);
+      return make_tl_object<td_api::vectorPathCommandCubicBezierCurve>(
+          copy(command.start_control_point_), copy(command.end_control_point_), copy(command.end_point_));
+    }
+    default:
+      UNREACHABLE();
+      return nullptr;
+  }
+}
+
+static tl_object_ptr<td_api::VectorPathCommand> copy_vector_path_command(
+    const tl_object_ptr<td_api::VectorPathCommand> &obj) {
+  return copy(obj);
+}
+
+template <>
+tl_object_ptr<td_api::closedVectorPath> copy(const td_api::closedVectorPath &obj) {
+  return make_tl_object<td_api::closedVectorPath>(transform(obj.commands_, copy_vector_path_command));
+}
+
+static tl_object_ptr<td_api::closedVectorPath> copy_closed_vector_path(
+    const tl_object_ptr<td_api::closedVectorPath> &obj) {
+  return copy(obj);
 }
 
 template <>
@@ -946,9 +1013,9 @@ tl_object_ptr<td_api::photo> copy(const td_api::photo &obj) {
 
 template <>
 tl_object_ptr<td_api::sticker> copy(const td_api::sticker &obj) {
-  return make_tl_object<td_api::sticker>(obj.set_id_, obj.width_, obj.height_, obj.emoji_, obj.is_animated_,
-                                         obj.is_mask_, copy(obj.mask_position_), copy(obj.thumbnail_),
-                                         copy(obj.sticker_));
+  return make_tl_object<td_api::sticker>(
+      obj.set_id_, obj.width_, obj.height_, obj.emoji_, obj.is_animated_, obj.is_mask_, copy(obj.mask_position_),
+      transform(obj.outline_, copy_closed_vector_path), copy(obj.thumbnail_), copy(obj.sticker_));
 }
 
 template <>
@@ -970,7 +1037,7 @@ tl_object_ptr<td_api::contact> copy(const td_api::contact &obj) {
 
 template <>
 tl_object_ptr<td_api::location> copy(const td_api::location &obj) {
-  return make_tl_object<td_api::location>(obj.latitude_, obj.longitude_);
+  return make_tl_object<td_api::location>(obj.latitude_, obj.longitude_, obj.horizontal_accuracy_);
 }
 
 template <>
@@ -1379,8 +1446,8 @@ void InlineQueriesManager::on_get_inline_query_results(UserId bot_user_id, uint6
             Location l(inline_message_geo->geo_);
             location->location_ = l.get_location_object();
           } else {
-            auto coordinates = split(Slice(result->description_));
-            Location l(to_double(coordinates.first), to_double(coordinates.second), 0);
+            auto latitude_longitude = split(Slice(result->description_));
+            Location l(to_double(latitude_longitude.first), to_double(latitude_longitude.second), 0.0, 0);
             location->location_ = l.get_location_object();
           }
           location->thumbnail_ = register_thumbnail(std::move(result->thumb_));
@@ -1686,7 +1753,8 @@ tl_object_ptr<td_api::inlineQueryResults> InlineQueriesManager::get_inline_query
 }
 
 void InlineQueriesManager::on_new_query(int64 query_id, UserId sender_user_id, Location user_location,
-                                        const string &query, const string &offset) {
+                                        tl_object_ptr<telegram_api::InlineQueryPeerType> peer_type, const string &query,
+                                        const string &offset) {
   if (!sender_user_id.is_valid()) {
     LOG(ERROR) << "Receive new inline query from invalid " << sender_user_id;
     return;
@@ -1696,10 +1764,31 @@ void InlineQueriesManager::on_new_query(int64 query_id, UserId sender_user_id, L
     LOG(ERROR) << "Receive new inline query";
     return;
   }
+  auto chat_type = [&]() -> td_api::object_ptr<td_api::ChatType> {
+    if (peer_type == nullptr) {
+      return nullptr;
+    }
+
+    switch (peer_type->get_id()) {
+      case telegram_api::inlineQueryPeerTypeSameBotPM::ID:
+        return td_api::make_object<td_api::chatTypePrivate>(sender_user_id.get());
+      case telegram_api::inlineQueryPeerTypePM::ID:
+        return td_api::make_object<td_api::chatTypePrivate>(0);
+      case telegram_api::inlineQueryPeerTypeChat::ID:
+        return td_api::make_object<td_api::chatTypeBasicGroup>(0);
+      case telegram_api::inlineQueryPeerTypeMegagroup::ID:
+        return td_api::make_object<td_api::chatTypeSupergroup>(0, false);
+      case telegram_api::inlineQueryPeerTypeBroadcast::ID:
+        return td_api::make_object<td_api::chatTypeSupergroup>(0, true);
+      default:
+        UNREACHABLE();
+        return nullptr;
+    }
+  }();
   send_closure(G()->td(), &Td::send_update,
                make_tl_object<td_api::updateNewInlineQuery>(
                    query_id, td_->contacts_manager_->get_user_id_object(sender_user_id, "updateNewInlineQuery"),
-                   user_location.get_location_object(), query, offset));
+                   user_location.get_location_object(), std::move(chat_type), query, offset));
 }
 
 void InlineQueriesManager::on_chosen_result(

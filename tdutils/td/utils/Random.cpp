@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -146,6 +146,10 @@ int Random::fast(int min, int max) {
 double Random::fast(double min, double max) {
   DCHECK(min <= max);
   return min + fast_uint32() * 1.0 / std::numeric_limits<uint32>::max() * (max - min);
+}
+
+bool Random::fast_bool() {
+  return (fast_uint32() & 1) != 0;
 }
 
 Random::Xorshift128plus::Xorshift128plus(uint64 seed) {

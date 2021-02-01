@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -39,6 +39,7 @@
 
 #include "td/actor/actor.h"
 
+#include "td/utils/algorithm.h"
 #include "td/utils/base64.h"
 #include "td/utils/buffer.h"
 #include "td/utils/common.h"
@@ -515,7 +516,6 @@ ActorOwn<> get_full_config(DcOption option, Promise<FullConfig> promise, ActorSh
     }
     void on_result(NetQueryPtr query) override {
       promise_.set_result(fetch_result<telegram_api::help_getConfig>(std::move(query)));
-      stop();
     }
     void hangup_shared() override {
       if (get_link_token() == 1) {
@@ -876,12 +876,11 @@ class ConfigRecoverer : public Actor {
 };
 
 ConfigManager::ConfigManager(ActorShared<> parent) : parent_(std::move(parent)) {
-  lazy_request_flood_countrol_.add_limit(20, 1);
+  lazy_request_flood_control_.add_limit(20, 1);
 }
 
 void ConfigManager::start_up() {
-  ref_cnt_++;
-  config_recoverer_ = create_actor<ConfigRecoverer>("Recoverer", actor_shared());
+  config_recoverer_ = create_actor<ConfigRecoverer>("Recoverer", create_reference());
   send_closure(config_recoverer_, &ConfigRecoverer::on_dc_options_update, load_dc_options_update());
 
   auto expire_time = load_config_expire_time();
@@ -893,7 +892,13 @@ void ConfigManager::start_up() {
   }
 }
 
+ActorShared<> ConfigManager::create_reference() {
+  ref_cnt_++;
+  return actor_shared(this, REFCNT_TOKEN);
+}
+
 void ConfigManager::hangup_shared() {
+  LOG_CHECK(get_link_token() == REFCNT_TOKEN) << "Expected REFCNT_TOKEN, got " << get_link_token();
   ref_cnt_--;
   try_stop();
 }
@@ -926,7 +931,7 @@ void ConfigManager::request_config() {
     return;
   }
 
-  lazy_request_flood_countrol_.add_event(static_cast<int32>(Timestamp::now().at()));
+  lazy_request_flood_control_.add_event(static_cast<int32>(Timestamp::now().at()));
   request_config_from_dc_impl(DcId::main());
 }
 
@@ -939,7 +944,7 @@ void ConfigManager::lazy_request_config() {
     return;
   }
 
-  expire_time_.relax(Timestamp::at(lazy_request_flood_countrol_.get_wakeup_at()));
+  expire_time_.relax(Timestamp::at(lazy_request_flood_control_.get_wakeup_at()));
   set_timeout_at(expire_time_.at());
 }
 
@@ -1051,7 +1056,7 @@ void ConfigManager::request_config_from_dc_impl(DcId dc_id) {
   config_sent_cnt_++;
   auto query = G()->net_query_creator().create_unauth(telegram_api::help_getConfig(), dc_id);
   query->total_timeout_limit_ = 60 * 60 * 24;
-  G()->net_query_dispatcher().dispatch_with_callback(std::move(query), actor_shared(this, 0));
+  G()->net_query_dispatcher().dispatch_with_callback(std::move(query), actor_shared(this, 8));
 }
 
 void ConfigManager::do_set_ignore_sensitive_content_restrictions(bool ignore_sensitive_content_restrictions) {
@@ -1272,7 +1277,7 @@ void ConfigManager::on_result(NetQueryPtr res) {
     return;
   }
 
-  CHECK(token == 0);
+  CHECK(token == 8);
   CHECK(config_sent_cnt_ > 0);
   config_sent_cnt_--;
   auto r_config = fetch_result<telegram_api::help_getConfig>(std::move(res));
@@ -1479,6 +1484,7 @@ void ConfigManager::process_app_config(tl_object_ptr<telegram_api::JSONValue> &c
   string animation_search_provider;
   string animation_search_emojis;
   vector<SuggestedAction> suggested_actions;
+  bool can_archive_and_mute_new_chats_from_unknown_users = false;
   if (config->get_id() == telegram_api::jsonObject::ID) {
     for (auto &key_value : static_cast<telegram_api::jsonObject *>(config.get())->value_) {
       Slice key = key_value->key_;
@@ -1626,6 +1632,15 @@ void ConfigManager::process_app_config(tl_object_ptr<telegram_api::JSONValue> &c
         }
         continue;
       }
+      if (key == "autoarchive_setting_available") {
+        if (value->get_id() == telegram_api::jsonBool::ID) {
+          can_archive_and_mute_new_chats_from_unknown_users =
+              std::move(static_cast<telegram_api::jsonBool *>(value)->value_);
+        } else {
+          LOG(ERROR) << "Receive unexpected autoarchive_setting_available " << to_string(*value);
+        }
+        continue;
+      }
 
       new_values.push_back(std::move(key_value));
     }
@@ -1673,14 +1688,19 @@ void ConfigManager::process_app_config(tl_object_ptr<telegram_api::JSONValue> &c
   } else {
     shared_config.set_option_string("animation_search_emojis", animation_search_emojis);
   }
+  if (!can_archive_and_mute_new_chats_from_unknown_users) {
+    shared_config.set_option_empty("can_archive_and_mute_new_chats_from_unknown_users");
+  } else {
+    shared_config.set_option_boolean("can_archive_and_mute_new_chats_from_unknown_users",
+                                     can_archive_and_mute_new_chats_from_unknown_users);
+  }
 
   shared_config.set_option_empty("default_ton_blockchain_config");
   shared_config.set_option_empty("default_ton_blockchain_name");
 
   // do not update suggested actions while changing content settings or dismissing an action
   if (!is_set_content_settings_request_sent_ && dismiss_suggested_action_request_count_ == 0) {
-    std::sort(suggested_actions.begin(), suggested_actions.end());
-    suggested_actions.erase(std::unique(suggested_actions.begin(), suggested_actions.end()), suggested_actions.end());
+    td::unique(suggested_actions);
     if (suggested_actions != suggested_actions_) {
       vector<SuggestedAction> added_actions;
       vector<SuggestedAction> removed_actions;

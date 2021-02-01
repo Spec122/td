@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -84,13 +84,18 @@ class AesCtrState {
   void decrypt(Slice from, MutableSlice to);
 
  private:
-  class Impl;
+  struct Impl;
   unique_ptr<Impl> ctx_;
 };
 
 class AesCbcState {
  public:
   AesCbcState(Slice key256, Slice iv128);
+  AesCbcState(const AesCbcState &from) = delete;
+  AesCbcState &operator=(const AesCbcState &from) = delete;
+  AesCbcState(AesCbcState &&from);
+  AesCbcState &operator=(AesCbcState &&from);
+  ~AesCbcState();
 
   void encrypt(Slice from, MutableSlice to);
   void decrypt(Slice from, MutableSlice to);
@@ -104,7 +109,11 @@ class AesCbcState {
   }
 
  private:
+  struct Impl;
+  unique_ptr<Impl> ctx_;
+
   Raw raw_;
+  bool is_encrypt_ = false;
 };
 
 void sha1(Slice data, unsigned char output[20]);

@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -58,7 +58,7 @@ void scan_db(CancellationToken &token, CallbackT &&callback) {
     if (value.substr(0, 2) == "@@") {
       return true;
     }
-    logevent::WithVersion<TlParser> parser(value);
+    log_event::WithVersion<TlParser> parser(value);
     FileData data;
     data.parse(parser, false);
     if (parser.get_status().is_error()) {

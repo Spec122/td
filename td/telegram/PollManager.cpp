@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -31,6 +31,7 @@
 #include "td/db/SqliteKeyValue.h"
 #include "td/db/SqliteKeyValueAsync.h"
 
+#include "td/utils/algorithm.h"
 #include "td/utils/buffer.h"
 #include "td/utils/format.h"
 #include "td/utils/logging.h"
@@ -223,10 +224,8 @@ class StopPollActor : public NetActorOnce {
     }
 
     auto result = result_ptr.move_as_ok();
-    LOG(INFO) << "Receive result for stopPoll: " << to_string(result);
-    td->updates_manager_->on_get_updates(std::move(result));
-
-    promise_.set_value(Unit());
+    LOG(INFO) << "Receive result for StopPollQuery: " << to_string(result);
+    td->updates_manager_->on_get_updates(std::move(result), std::move(promise_));
   }
 
   void on_error(uint64 id, Status status) override {
@@ -643,7 +642,7 @@ void PollManager::unregister_poll(PollId poll_id, FullMessageId full_message_id,
   }
   LOG(INFO) << "Unregister " << poll_id << " from " << full_message_id << " from " << source;
   auto &message_ids = poll_messages_[poll_id];
-  auto is_deleted = message_ids.erase(full_message_id);
+  auto is_deleted = message_ids.erase(full_message_id) > 0;
   LOG_CHECK(is_deleted) << source << " " << poll_id << " " << full_message_id;
   if (message_ids.empty()) {
     poll_messages_.erase(poll_id);
@@ -677,8 +676,7 @@ string PollManager::get_poll_search_text(PollId poll_id) const {
 
 void PollManager::set_poll_answer(PollId poll_id, FullMessageId full_message_id, vector<int32> &&option_ids,
                                   Promise<Unit> &&promise) {
-  std::sort(option_ids.begin(), option_ids.end());
-  option_ids.erase(std::unique(option_ids.begin(), option_ids.end()), option_ids.end());
+  td::unique(option_ids);
 
   if (is_local_poll_id(poll_id)) {
     return promise.set_error(Status::Error(400, "Poll can't be answered"));
@@ -749,7 +747,7 @@ class PollManager::SetPollAnswerLogEvent {
 };
 
 void PollManager::do_set_poll_answer(PollId poll_id, FullMessageId full_message_id, vector<string> &&options,
-                                     uint64 logevent_id, Promise<Unit> &&promise) {
+                                     uint64 log_event_id, Promise<Unit> &&promise) {
   LOG(INFO) << "Set answer in " << poll_id << " from " << full_message_id;
   auto &pending_answer = pending_answers_[poll_id];
   if (!pending_answer.promises_.empty() && pending_answer.options_ == options) {
@@ -757,27 +755,27 @@ void PollManager::do_set_poll_answer(PollId poll_id, FullMessageId full_message_
     return;
   }
 
-  if (pending_answer.logevent_id_ != 0 && logevent_id != 0) {
-    LOG(ERROR) << "Duplicate SetPollAnswer log event: " << pending_answer.logevent_id_ << " and " << logevent_id;
-    binlog_erase(G()->td_db()->get_binlog(), logevent_id);
+  if (pending_answer.log_event_id_ != 0 && log_event_id != 0) {
+    LOG(ERROR) << "Duplicate SetPollAnswer log event: " << pending_answer.log_event_id_ << " and " << log_event_id;
+    binlog_erase(G()->td_db()->get_binlog(), log_event_id);
     return;
   }
-  if (logevent_id == 0 && G()->parameters().use_message_db) {
-    SetPollAnswerLogEvent logevent;
-    logevent.poll_id_ = poll_id;
-    logevent.full_message_id_ = full_message_id;
-    logevent.options_ = options;
-    auto storer = LogEventStorerImpl<SetPollAnswerLogEvent>(logevent);
+  if (log_event_id == 0 && G()->parameters().use_message_db) {
+    SetPollAnswerLogEvent log_event;
+    log_event.poll_id_ = poll_id;
+    log_event.full_message_id_ = full_message_id;
+    log_event.options_ = options;
+    auto storer = get_log_event_storer(log_event);
     if (pending_answer.generation_ == 0) {
-      CHECK(pending_answer.logevent_id_ == 0);
-      logevent_id = binlog_add(G()->td_db()->get_binlog(), LogEvent::HandlerType::SetPollAnswer, storer);
-      LOG(INFO) << "Add set poll answer logevent " << logevent_id;
+      CHECK(pending_answer.log_event_id_ == 0);
+      log_event_id = binlog_add(G()->td_db()->get_binlog(), LogEvent::HandlerType::SetPollAnswer, storer);
+      LOG(INFO) << "Add set poll answer log event " << log_event_id;
     } else {
-      CHECK(pending_answer.logevent_id_ != 0);
-      logevent_id = pending_answer.logevent_id_;
-      auto new_logevent_id = binlog_rewrite(G()->td_db()->get_binlog(), pending_answer.logevent_id_,
-                                            LogEvent::HandlerType::SetPollAnswer, storer);
-      LOG(INFO) << "Rewrite set poll answer logevent " << logevent_id << " with " << new_logevent_id;
+      CHECK(pending_answer.log_event_id_ != 0);
+      log_event_id = pending_answer.log_event_id_;
+      auto new_log_event_id = binlog_rewrite(G()->td_db()->get_binlog(), pending_answer.log_event_id_,
+                                             LogEvent::HandlerType::SetPollAnswer, storer);
+      LOG(INFO) << "Rewrite set poll answer log event " << log_event_id << " with " << new_log_event_id;
     }
   }
 
@@ -803,7 +801,7 @@ void PollManager::do_set_poll_answer(PollId poll_id, FullMessageId full_message_
   pending_answer.options_ = std::move(options);
   pending_answer.promises_.push_back(std::move(promise));
   pending_answer.generation_ = generation;
-  pending_answer.logevent_id_ = logevent_id;
+  pending_answer.log_event_id_ = log_event_id;
 
   notify_on_poll_update(poll_id);
 
@@ -833,9 +831,9 @@ void PollManager::on_set_poll_answer(PollId poll_id, uint64 generation,
     return;
   }
 
-  if (pending_answer.logevent_id_ != 0) {
-    LOG(INFO) << "Delete set poll answer logevent " << pending_answer.logevent_id_;
-    binlog_erase(G()->td_db()->get_binlog(), pending_answer.logevent_id_);
+  if (pending_answer.log_event_id_ != 0) {
+    LOG(INFO) << "Delete set poll answer log event " << pending_answer.log_event_id_;
+    binlog_erase(G()->td_db()->get_binlog(), pending_answer.log_event_id_);
   }
 
   auto promises = std::move(pending_answer.promises_);
@@ -846,26 +844,34 @@ void PollManager::on_set_poll_answer(PollId poll_id, uint64 generation,
     poll->was_saved = false;
   }
   if (result.is_ok()) {
-    td_->updates_manager_->on_get_updates(result.move_as_ok());
-
-    for (auto &promise : promises) {
-      promise.set_value(Unit());
-    }
+    td_->updates_manager_->on_get_updates(
+        result.move_as_ok(), PromiseCreator::lambda([actor_id = actor_id(this), poll_id,
+                                                     promises = std::move(promises)](Result<Unit> &&result) mutable {
+          send_closure(actor_id, &PollManager::on_set_poll_answer_finished, poll_id, Unit(), std::move(promises));
+        }));
   } else {
-    for (auto &promise : promises) {
-      promise.set_error(result.error().clone());
+    on_set_poll_answer_finished(poll_id, result.move_as_error(), std::move(promises));
+  }
+}
+
+void PollManager::on_set_poll_answer_finished(PollId poll_id, Result<Unit> &&result, vector<Promise<Unit>> &&promises) {
+  if (!G()->close_flag()) {
+    auto poll = get_poll(poll_id);
+    if (poll != nullptr && !poll->was_saved) {
+      // no updates was sent during updates processing, so send them
+      // poll wasn't changed, so there is no reason to actually save it
+      if (!(poll->is_closed && poll->is_updated_after_close)) {
+        LOG(INFO) << "Schedule updating of " << poll_id << " soon";
+        update_poll_timeout_.set_timeout_in(poll_id.get(), 0.0);
+      }
+
+      notify_on_poll_update(poll_id);
+      poll->was_saved = true;
     }
   }
-  if (poll != nullptr && !poll->was_saved) {
-    // no updates was sent during updates processing, so send them
-    // poll wasn't changed, so there is no reason to actually save it
-    if (!(poll->is_closed && poll->is_updated_after_close)) {
-      LOG(INFO) << "Schedule updating of " << poll_id << " soon";
-      update_poll_timeout_.set_timeout_in(poll_id.get(), 0.0);
-    }
 
-    notify_on_poll_update(poll_id);
-    poll->was_saved = true;
+  for (auto &promise : promises) {
+    promise.set_result(result.clone());
   }
 }
 
@@ -1104,17 +1110,17 @@ class PollManager::StopPollLogEvent {
 };
 
 void PollManager::do_stop_poll(PollId poll_id, FullMessageId full_message_id, unique_ptr<ReplyMarkup> &&reply_markup,
-                               uint64 logevent_id, Promise<Unit> &&promise) {
+                               uint64 log_event_id, Promise<Unit> &&promise) {
   LOG(INFO) << "Stop " << poll_id << " from " << full_message_id;
-  if (logevent_id == 0 && G()->parameters().use_message_db && reply_markup == nullptr) {
-    StopPollLogEvent logevent{poll_id, full_message_id};
-    auto storer = LogEventStorerImpl<StopPollLogEvent>(logevent);
-    logevent_id = binlog_add(G()->td_db()->get_binlog(), LogEvent::HandlerType::StopPoll, storer);
+  if (log_event_id == 0 && G()->parameters().use_message_db && reply_markup == nullptr) {
+    StopPollLogEvent log_event{poll_id, full_message_id};
+    log_event_id =
+        binlog_add(G()->td_db()->get_binlog(), LogEvent::HandlerType::StopPoll, get_log_event_storer(log_event));
   }
 
   bool is_inserted = being_closed_polls_.insert(poll_id).second;
   CHECK(is_inserted);
-  auto new_promise = get_erase_logevent_promise(logevent_id, std::move(promise));
+  auto new_promise = get_erase_log_event_promise(log_event_id, std::move(promise));
 
   send_closure(td_->create_net_actor<StopPollActor>(std::move(new_promise)), &StopPollActor::send, full_message_id,
                std::move(reply_markup));
@@ -1220,7 +1226,7 @@ void PollManager::on_get_poll_results(PollId poll_id, uint64 generation,
     return;
   }
 
-  td_->updates_manager_->on_get_updates(result.move_as_ok());
+  td_->updates_manager_->on_get_updates(result.move_as_ok(), Promise<Unit>());
 }
 
 void PollManager::on_online() {
@@ -1652,8 +1658,8 @@ void PollManager::on_binlog_events(vector<BinlogEvent> &&events) {
         auto dialog_id = log_event.full_message_id_.get_dialog_id();
 
         Dependencies dependencies;
-        MessagesManager::add_dialog_dependencies(dependencies, dialog_id);
-        resolve_dependencies_force(td_, dependencies);
+        add_dialog_dependencies(dependencies, dialog_id);  // do not load the dialog itself
+        resolve_dependencies_force(td_, dependencies, "SetPollAnswerLogEvent");
 
         do_set_poll_answer(log_event.poll_id_, log_event.full_message_id_, std::move(log_event.options_), event.id_,
                            Auto());
@@ -1671,14 +1677,14 @@ void PollManager::on_binlog_events(vector<BinlogEvent> &&events) {
         auto dialog_id = log_event.full_message_id_.get_dialog_id();
 
         Dependencies dependencies;
-        MessagesManager::add_dialog_dependencies(dependencies, dialog_id);
-        resolve_dependencies_force(td_, dependencies);
+        add_dialog_dependencies(dependencies, dialog_id);  // do not load the dialog itself
+        resolve_dependencies_force(td_, dependencies, "StopPollLogEvent");
 
         do_stop_poll(log_event.poll_id_, log_event.full_message_id_, nullptr, event.id_, Auto());
         break;
       }
       default:
-        LOG(FATAL) << "Unsupported logevent type " << event.type_;
+        LOG(FATAL) << "Unsupported log event type " << event.type_;
     }
   }
 }

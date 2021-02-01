@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -7,11 +7,13 @@
 #include "td/utils/port/FileFd.h"
 
 #if TD_PORT_WINDOWS
+#include "td/utils/port/FromApp.h"
 #include "td/utils/port/Stat.h"
 #include "td/utils/port/wstring_convert.h"
 #endif
 
 #include "td/utils/common.h"
+#include "td/utils/ExitGuard.h"
 #include "td/utils/logging.h"
 #include "td/utils/misc.h"
 #include "td/utils/port/detail/PollableFd.h"
@@ -210,7 +212,8 @@ Result<FileFd> FileFd::open(CSlice filepath, int32 flags, int32 mode) {
   extended_parameters.dwSize = sizeof(extended_parameters);
   extended_parameters.dwFileAttributes = FILE_ATTRIBUTE_NORMAL;
   extended_parameters.dwFileFlags = native_flags;
-  auto handle = CreateFile2(w_filepath.c_str(), desired_access, share_mode, creation_disposition, &extended_parameters);
+  auto handle = td::CreateFile2FromAppW(w_filepath.c_str(), desired_access, share_mode, creation_disposition,
+                                        &extended_parameters);
 #endif
   if (handle == INVALID_HANDLE_VALUE) {
     return OS_ERROR(PSLICE() << "File \"" << filepath << "\" can't be " << PrintFlags{flags});
@@ -356,6 +359,7 @@ Result<size_t> FileFd::pread(MutableSlice slice, int64 offset) const {
 
 static std::mutex in_process_lock_mutex;
 static std::unordered_set<string> locked_files;
+static ExitGuard exit_guard;
 
 static Status create_local_lock(const string &path, int32 &max_tries) {
   while (true) {
@@ -469,12 +473,13 @@ Status FileFd::lock(const LockFlags flags, const string &path, int32 max_tries) 
 }
 
 void FileFd::remove_local_lock(const string &path) {
-  if (!path.empty()) {
-    VLOG(fd) << "Unlock file \"" << path << '"';
-    std::unique_lock<std::mutex> lock(in_process_lock_mutex);
-    auto erased = locked_files.erase(path);
-    CHECK(erased > 0);
+  if (path.empty() || ExitGuard::is_exited()) {
+    return;
   }
+  VLOG(fd) << "Unlock file \"" << path << '"';
+  std::unique_lock<std::mutex> lock(in_process_lock_mutex);
+  auto erased_count = locked_files.erase(path);
+  CHECK(erased_count > 0 || ExitGuard::is_exited());
 }
 
 void FileFd::close() {

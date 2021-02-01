@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -23,7 +23,7 @@ TEST(OptionParser, run) {
     for (auto &arg : args) {
       argv.push_back(&arg[0]);
     }
-    return options.run(static_cast<int>(argv.size()), &argv[0]);
+    return options.run_impl(static_cast<int>(argv.size()), &argv[0], -1);
   };
 
   td::uint64 chosen_options = 0;

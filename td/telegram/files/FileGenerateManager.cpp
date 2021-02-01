@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -190,7 +190,8 @@ class MapDownloadGenerateActor : public FileGenerateActor {
 
     int64 access_hash = G()->get_location_access_hash(latitude, longitude);
     return make_tl_object<telegram_api::inputWebFileGeoPointLocation>(
-        make_tl_object<telegram_api::inputGeoPoint>(latitude, longitude), access_hash, width, height, zoom, scale);
+        make_tl_object<telegram_api::inputGeoPoint>(0, latitude, longitude, 0), access_hash, width, height, zoom,
+        scale);
   }
 
   void start_up() override {

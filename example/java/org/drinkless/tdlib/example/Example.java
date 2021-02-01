@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -29,7 +29,8 @@ public final class Example {
 
     private static TdApi.AuthorizationState authorizationState = null;
     private static volatile boolean haveAuthorization = false;
-    private static volatile boolean quiting = false;
+    private static volatile boolean needQuit = false;
+    private static volatile boolean canQuit = false;
 
     private static final Client.ResultHandler defaultHandler = new DefaultHandler();
 
@@ -160,8 +161,10 @@ public final class Example {
                 break;
             case TdApi.AuthorizationStateClosed.CONSTRUCTOR:
                 print("Closed");
-                if (!quiting) {
-                    client = Client.create(new UpdatesHandler(), null, null); // recreate client after previous has closed
+                if (!needQuit) {
+                    client = Client.create(new UpdateHandler(), null, null); // recreate client after previous has closed
+                } else {
+                    canQuit = true;
                 }
                 break;
             default:
@@ -230,7 +233,7 @@ public final class Example {
                     client.send(new TdApi.LogOut(), defaultHandler);
                     break;
                 case "q":
-                    quiting = true;
+                    needQuit = true;
                     haveAuthorization = false;
                     client.send(new TdApi.Close(), defaultHandler);
                     break;
@@ -245,7 +248,7 @@ public final class Example {
     private static void getMainChatList(final int limit) {
         synchronized (mainChatList) {
             if (!haveFullMainChatList && limit > mainChatList.size()) {
-                // have enough chats in the chat list or chat list is too small
+                // send GetChats request if there are some unknown chats and have not enough known chats
                 long offsetOrder = Long.MAX_VALUE;
                 long offsetChatId = 0;
                 if (!mainChatList.isEmpty()) {
@@ -278,11 +281,10 @@ public final class Example {
                 return;
             }
 
-            // have enough chats in the chat list to answer request
             java.util.Iterator<OrderedChat> iter = mainChatList.iterator();
             System.out.println();
             System.out.println("First " + limit + " chat(s) out of " + mainChatList.size() + " known chat(s):");
-            for (int i = 0; i < limit; i++) {
+            for (int i = 0; i < limit && i < mainChatList.size(); i++) {
                 long chatId = iter.next().chatId;
                 TdApi.Chat chat = chats.get(chatId);
                 synchronized (chat) {
@@ -299,24 +301,24 @@ public final class Example {
         TdApi.ReplyMarkup replyMarkup = new TdApi.ReplyMarkupInlineKeyboard(new TdApi.InlineKeyboardButton[][]{row, row, row});
 
         TdApi.InputMessageContent content = new TdApi.InputMessageText(new TdApi.FormattedText(message, null), false, true);
-        client.send(new TdApi.SendMessage(chatId, 0, null, replyMarkup, content), defaultHandler);
+        client.send(new TdApi.SendMessage(chatId, 0, 0, null, replyMarkup, content), defaultHandler);
     }
 
     public static void main(String[] args) throws InterruptedException {
         // disable TDLib log
         Client.execute(new TdApi.SetLogVerbosityLevel(0));
-        if (Client.execute(new TdApi.SetLogStream(new TdApi.LogStreamFile("tdlib.log", 1 << 27))) instanceof TdApi.Error) {
+        if (Client.execute(new TdApi.SetLogStream(new TdApi.LogStreamFile("tdlib.log", 1 << 27, false))) instanceof TdApi.Error) {
             throw new IOError(new IOException("Write access to the current directory is required"));
         }
 
         // create client
-        client = Client.create(new UpdatesHandler(), null, null);
+        client = Client.create(new UpdateHandler(), null, null);
 
         // test Client.execute
         defaultHandler.onResult(Client.execute(new TdApi.GetTextEntities("@telegram /test_command https://telegram.org telegram.me @gif @test")));
 
         // main loop
-        while (!quiting) {
+        while (!needQuit) {
             // await authorization
             authorizationLock.lock();
             try {
@@ -330,6 +332,9 @@ public final class Example {
             while (haveAuthorization) {
                 getCommand();
             }
+        }
+        while (!canQuit) {
+            Thread.sleep(1);
         }
     }
 
@@ -367,7 +372,7 @@ public final class Example {
         }
     }
 
-    private static class UpdatesHandler implements Client.ResultHandler {
+    private static class UpdateHandler implements Client.ResultHandler {
         @Override
         public void onResult(TdApi.Object object) {
             switch (object.getConstructor()) {
@@ -546,6 +551,14 @@ public final class Example {
                     TdApi.Chat chat = chats.get(update.chatId);
                     synchronized (chat) {
                         chat.isMarkedAsUnread = update.isMarkedAsUnread;
+                    }
+                    break;
+                }
+                case TdApi.UpdateChatIsBlocked.CONSTRUCTOR: {
+                    TdApi.UpdateChatIsBlocked update = (TdApi.UpdateChatIsBlocked) object;
+                    TdApi.Chat chat = chats.get(update.chatId);
+                    synchronized (chat) {
+                        chat.isBlocked = update.isBlocked;
                     }
                     break;
                 }

@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -151,6 +151,7 @@ class AnimationsManager : public Actor {
   vector<FileId> saved_animation_ids_;
   vector<FileId> saved_animation_file_ids_;
   double next_saved_animations_load_time_ = 0;
+  bool are_saved_animations_being_loaded_ = false;
   bool are_saved_animations_loaded_ = false;
   vector<Promise<Unit>> load_saved_animations_queries_;
   vector<Promise<Unit>> repair_saved_animations_queries_;

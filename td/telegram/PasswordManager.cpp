@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -500,7 +500,7 @@ void PasswordManager::update_password_settings(UpdateSettings update_settings, P
   auto password = update_settings.current_password;
   get_full_state(
       std::move(password),
-      PromiseCreator::lambda([=, actor_id = actor_id(this), result_promise = std::move(result_promise),
+      PromiseCreator::lambda([actor_id = actor_id(this), result_promise = std::move(result_promise),
                               update_settings = std::move(update_settings)](Result<PasswordFullState> r_state) mutable {
         if (r_state.is_error()) {
           return result_promise.set_error(r_state.move_as_error());
@@ -724,8 +724,8 @@ void PasswordManager::cache_secret(secure_storage::Secret secret) {
   secret_ = std::move(secret);
 
   const int32 max_cache_time = 3600;
-  secret_expire_date_ = Time::now() + max_cache_time;
-  set_timeout_at(secret_expire_date_);
+  secret_expire_time_ = Time::now() + max_cache_time;
+  set_timeout_at(secret_expire_time_);
 }
 
 void PasswordManager::drop_cached_secret() {
@@ -734,8 +734,10 @@ void PasswordManager::drop_cached_secret() {
 }
 
 void PasswordManager::timeout_expired() {
-  if (Time::now() >= secret_expire_date_) {
+  if (Time::now() >= secret_expire_time_) {
     drop_cached_secret();
+  } else {
+    set_timeout_at(secret_expire_time_);
   }
 }
 

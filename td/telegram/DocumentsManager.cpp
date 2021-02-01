@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -78,7 +78,7 @@ Document DocumentsManager::on_get_document(RemoteDocument remote_document, Dialo
     switch (attribute->get_id()) {
       case telegram_api::documentAttributeImageSize::ID: {
         auto image_size = move_tl_object_as<telegram_api::documentAttributeImageSize>(attribute);
-        dimensions = get_dimensions(image_size->w_, image_size->h_);
+        dimensions = get_dimensions(image_size->w_, image_size->h_, "documentAttributeImageSize");
         break;
       }
       case telegram_api::documentAttributeAnimated::ID:
@@ -110,8 +110,12 @@ Document DocumentsManager::on_get_document(RemoteDocument remote_document, Dialo
   int32 video_duration = 0;
   if (video != nullptr) {
     video_duration = video->duration_;
-    if (dimensions.width == 0) {
-      dimensions = get_dimensions(video->w_, video->h_);
+    auto video_dimensions = get_dimensions(video->w_, video->h_, "documentAttributeVideo");
+    if (dimensions.width == 0 || (video_dimensions.width != 0 && video_dimensions != dimensions)) {
+      if (dimensions.width != 0) {
+        LOG(ERROR) << "Receive ambiguous video dimensions " << dimensions << " and " << video_dimensions;
+      }
+      dimensions = video_dimensions;
     }
 
     if (animated != nullptr) {
@@ -261,11 +265,13 @@ Document DocumentsManager::on_get_document(RemoteDocument remote_document, Dialo
 
     if (document_type != Document::Type::VoiceNote) {
       for (auto &thumb : document->thumbs_) {
-        auto photo_size =
-            get_photo_size(td_->file_manager_.get(), {FileType::Thumbnail, 0}, id, access_hash, file_reference,
-                           DcId::create(dc_id), owner_dialog_id, std::move(thumb), thumbnail_format);
+        auto photo_size = get_photo_size(td_->file_manager_.get(), {FileType::Thumbnail, 0}, id, access_hash,
+                                         file_reference, DcId::create(dc_id), owner_dialog_id, std::move(thumb),
+                                         thumbnail_format, document_type != Document::Type::Sticker);
         if (photo_size.get_offset() == 0) {
-          thumbnail = std::move(photo_size.get<0>());
+          if (!thumbnail.file_id.is_valid()) {
+            thumbnail = std::move(photo_size.get<0>());
+          }
         } else {
           minithumbnail = std::move(photo_size.get<1>());
         }
@@ -429,8 +435,8 @@ Document DocumentsManager::on_get_document(RemoteDocument remote_document, Dialo
                       std::move(mime_type), !is_web);
       break;
     case Document::Type::Sticker:
-      td_->stickers_manager_->create_sticker(file_id, std::move(thumbnail), dimensions, std::move(sticker),
-                                             is_animated_sticker, load_data_multipromise_ptr);
+      td_->stickers_manager_->create_sticker(file_id, std::move(minithumbnail), std::move(thumbnail), dimensions,
+                                             std::move(sticker), is_animated_sticker, load_data_multipromise_ptr);
       break;
     case Document::Type::Video:
       td_->videos_manager_->create_video(file_id, std::move(minithumbnail), std::move(thumbnail),
@@ -580,7 +586,8 @@ tl_object_ptr<telegram_api::InputMedia> DocumentsManager::get_input_media(
     return nullptr;
   }
   if (file_view.has_remote_location() && !file_view.main_remote_location().is_web() && input_file == nullptr) {
-    return make_tl_object<telegram_api::inputMediaDocument>(0, file_view.main_remote_location().as_input_document(), 0);
+    return make_tl_object<telegram_api::inputMediaDocument>(0, file_view.main_remote_location().as_input_document(), 0,
+                                                            string());
   }
   if (file_view.has_url()) {
     return make_tl_object<telegram_api::inputMediaDocumentExternal>(0, file_view.url(), 0);

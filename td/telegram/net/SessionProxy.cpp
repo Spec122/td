@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -138,6 +138,10 @@ void SessionProxy::update_main_flag(bool is_main) {
 }
 
 void SessionProxy::update_destroy(bool need_destroy) {
+  if (need_destroy_ == need_destroy) {
+    LOG(INFO) << "Ignore reduntant update_destroy(" << need_destroy << ")";
+    return;
+  }
   need_destroy_ = need_destroy;
   close_session();
   open_session();

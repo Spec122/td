@@ -1,13 +1,14 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
-#include "td/utils/tests.h"
-
-#include "td/actor/actor.h"
-#include "td/actor/PromiseFuture.h"
+#include "td/telegram/ConfigManager.h"
+#include "td/telegram/net/DcId.h"
+#include "td/telegram/net/PublicRsaKeyShared.h"
+#include "td/telegram/net/Session.h"
+#include "td/telegram/NotificationManager.h"
 
 #include "td/mtproto/AuthData.h"
 #include "td/mtproto/DhHandshake.h"
@@ -25,11 +26,9 @@
 #include "td/net/Socks5.h"
 #include "td/net/TransparentProxy.h"
 
-#include "td/telegram/ConfigManager.h"
-#include "td/telegram/net/DcId.h"
-#include "td/telegram/net/PublicRsaKeyShared.h"
-#include "td/telegram/net/Session.h"
-#include "td/telegram/NotificationManager.h"
+#include "td/actor/actor.h"
+#include "td/actor/ConcurrentScheduler.h"
+#include "td/actor/PromiseFuture.h"
 
 #include "td/utils/base64.h"
 #include "td/utils/common.h"
@@ -38,7 +37,9 @@
 #include "td/utils/port/IPAddress.h"
 #include "td/utils/port/SocketFd.h"
 #include "td/utils/Random.h"
+#include "td/utils/Slice.h"
 #include "td/utils/Status.h"
+#include "td/utils/tests.h"
 #include "td/utils/Time.h"
 
 REGISTER_TESTS(mtproto);
@@ -72,7 +73,7 @@ TEST(Mtproto, GetHostByNameActor) {
         }
       });
       cnt++;
-      send_closure(actor_id, &GetHostByNameActor::run, host, 443, prefer_ipv6, std::move(promise));
+      send_closure_later(actor_id, &GetHostByNameActor::run, host, 443, prefer_ipv6, std::move(promise));
     };
 
     std::vector<std::string> hosts = {"127.0.0.2",
@@ -178,11 +179,13 @@ TEST(Mtproto, config) {
     run(get_simple_config_firebase_firestore, false);
   }
   cnt--;
-  sched.start();
-  while (sched.run_main(10)) {
-    // empty;
+  if (cnt != 0) {
+    sched.start();
+    while (sched.run_main(10)) {
+      // empty;
+    }
+    sched.finish();
   }
-  sched.finish();
 }
 
 TEST(Mtproto, encrypted_config) {
@@ -460,7 +463,7 @@ class Socks5TestActor : public Actor {
       return promise.set_error(Status::Error(PSTRING() << "Failed to open socket: " << r_socket.error()));
     }
     create_actor<Socks5>("socks5", r_socket.move_as_ok(), mtproto_ip_address, "", "",
-                         make_unique<Callback>(std::move(promise)), actor_shared())
+                         make_unique<Callback>(std::move(promise)), actor_shared(this))
         .release();
   }
 
@@ -708,4 +711,23 @@ TEST(Mtproto, TlsTransport) {
     // empty
   }
   sched.finish();
+}
+
+TEST(Mtproto, RSA) {
+  auto pem = td::Slice(
+      "-----BEGIN RSA PUBLIC KEY-----\n"
+      "MIIBCgKCAQEAr4v4wxMDXIaMOh8bayF/NyoYdpcysn5EbjTIOZC0RkgzsRj3SGlu\n"
+      "52QSz+ysO41dQAjpFLgxPVJoOlxXokaOq827IfW0bGCm0doT5hxtedu9UCQKbE8j\n"
+      "lDOk+kWMXHPZFJKWRgKgTu9hcB3y3Vk+JFfLpq3d5ZB48B4bcwrRQnzkx5GhWOFX\n"
+      "x73ZgjO93eoQ2b/lDyXxK4B4IS+hZhjzezPZTI5upTRbs5ljlApsddsHrKk6jJNj\n"
+      "8Ygs/ps8e6ct82jLXbnndC9s8HjEvDvBPH9IPjv5JUlmHMBFZ5vFQIfbpo0u0+1P\n"
+      "n6bkEi5o7/ifoyVv2pAZTRwppTz0EuXD8QIDAQAB\n"
+      "-----END RSA PUBLIC KEY-----");
+  auto rsa = RSA::from_pem_public_key(pem).move_as_ok();
+  ASSERT_EQ(-7596991558377038078, rsa.get_fingerprint());
+  ASSERT_EQ(256u, rsa.size());
+
+  string s(255, '\0');
+  string to(256, '\0');
+  ASSERT_EQ(256u, rsa.encrypt(MutableSlice(s).ubegin(), 10, 255, MutableSlice(to).ubegin(), 256));
 }

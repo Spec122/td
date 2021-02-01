@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -38,6 +38,7 @@
 #include "td/db/SqliteKeyValue.h"
 #include "td/db/SqliteKeyValueAsync.h"
 
+#include "td/utils/algorithm.h"
 #include "td/utils/buffer.h"
 #include "td/utils/common.h"
 #include "td/utils/format.h"
@@ -81,7 +82,7 @@ class GetWebPagePreviewQuery : public Td::ResultHandler {
     }
 
     auto ptr = result_ptr.move_as_ok();
-    LOG(INFO) << "Receive result for GetWebPagePreviewQuery " << to_string(ptr);
+    LOG(INFO) << "Receive result for GetWebPagePreviewQuery: " << to_string(ptr);
     td->web_pages_manager_->on_get_web_page_preview_success(request_id_, url_, std::move(ptr), std::move(promise_));
   }
 
@@ -112,7 +113,7 @@ class GetWebPageQuery : public Td::ResultHandler {
     }
 
     auto ptr = result_ptr.move_as_ok();
-    LOG(INFO) << "Receive result for GetWebPageQuery " << to_string(ptr);
+    LOG(INFO) << "Receive result for GetWebPageQuery: " << to_string(ptr);
     if (ptr->get_id() == telegram_api::webPageNotModified::ID) {
       if (web_page_id_.is_valid()) {
         auto web_page = move_tl_object_as<telegram_api::webPageNotModified>(ptr);
@@ -230,7 +231,7 @@ class WebPagesManager::WebPage {
 
   FileSourceId file_source_id;
 
-  mutable uint64 logevent_id = 0;
+  mutable uint64 log_event_id = 0;
 
   template <class StorerT>
   void store(StorerT &storer) const {
@@ -425,10 +426,10 @@ WebPageId WebPagesManager::on_get_web_page(tl_object_ptr<telegram_api::WebPage> 
       LOG(INFO) << "Got empty " << web_page_id;
       const WebPage *web_page_to_delete = get_web_page(web_page_id);
       if (web_page_to_delete != nullptr) {
-        if (web_page_to_delete->logevent_id != 0) {
+        if (web_page_to_delete->log_event_id != 0) {
           LOG(INFO) << "Erase " << web_page_id << " from binlog";
-          binlog_erase(G()->td_db()->get_binlog(), web_page_to_delete->logevent_id);
-          web_page_to_delete->logevent_id = 0;
+          binlog_erase(G()->td_db()->get_binlog(), web_page_to_delete->log_event_id);
+          web_page_to_delete->log_event_id = 0;
         }
         if (web_page_to_delete->file_source_id.is_valid()) {
           td_->file_manager_->change_files_source(web_page_to_delete->file_source_id,
@@ -484,7 +485,7 @@ WebPageId WebPagesManager::on_get_web_page(tl_object_ptr<telegram_api::WebPage> 
         page->embed_type = std::move(web_page->embed_type_);
       }
       if (web_page->flags_ & WEBPAGE_FLAG_HAS_EMBEDDED_PREVIEW_SIZE) {
-        page->embed_dimensions = get_dimensions(web_page->embed_width_, web_page->embed_height_);
+        page->embed_dimensions = get_dimensions(web_page->embed_width_, web_page->embed_height_, "webPage");
       }
       if (web_page->flags_ & WEBPAGE_FLAG_HAS_DURATION) {
         page->duration = web_page->duration_;
@@ -551,7 +552,7 @@ void WebPagesManager::update_web_page(unique_ptr<WebPage> web_page, WebPageId we
     }
 
     old_instant_view = std::move(page->instant_view);
-    web_page->logevent_id = page->logevent_id;
+    web_page->log_event_id = page->log_event_id;
   } else {
     auto it = url_to_file_source_id_.find(web_page->url);
     if (it != url_to_file_source_id_.end()) {
@@ -715,7 +716,7 @@ void WebPagesManager::unregister_web_page(WebPageId web_page_id, FullMessageId f
 
   LOG(INFO) << "Unregister " << web_page_id << " from " << full_message_id << " from " << source;
   auto &message_ids = web_page_messages_[web_page_id];
-  auto is_deleted = message_ids.erase(full_message_id);
+  auto is_deleted = message_ids.erase(full_message_id) > 0;
   LOG_CHECK(is_deleted) << source << " " << web_page_id << " " << full_message_id;
 
   if (message_ids.empty()) {
@@ -968,7 +969,9 @@ void WebPagesManager::on_load_web_page_instant_view_from_database(WebPageId web_
 
 void WebPagesManager::update_web_page_instant_view_load_requests(WebPageId web_page_id, bool force_update,
                                                                  Result<> result) {
-  // TODO [Error : 0 : Lost promise] on closing
+  if (G()->close_flag() && result.is_error()) {
+    result = Status::Error(500, "Request aborted");
+  }
   LOG(INFO) << "Update load requests for " << web_page_id;
   auto it = load_web_page_instant_view_queries_.find(web_page_id);
   if (it == load_web_page_instant_view_queries_.end()) {
@@ -1504,12 +1507,12 @@ void WebPagesManager::save_web_page(const WebPage *web_page, WebPageId web_page_
 
   CHECK(web_page != nullptr);
   if (!from_binlog) {
-    WebPageLogEvent logevent(web_page_id, web_page);
-    LogEventStorerImpl<WebPageLogEvent> storer(logevent);
-    if (web_page->logevent_id == 0) {
-      web_page->logevent_id = binlog_add(G()->td_db()->get_binlog(), LogEvent::HandlerType::WebPages, storer);
+    WebPageLogEvent log_event(web_page_id, web_page);
+    auto storer = get_log_event_storer(log_event);
+    if (web_page->log_event_id == 0) {
+      web_page->log_event_id = binlog_add(G()->td_db()->get_binlog(), LogEvent::HandlerType::WebPages, storer);
     } else {
-      binlog_rewrite(G()->td_db()->get_binlog(), web_page->logevent_id, LogEvent::HandlerType::WebPages, storer);
+      binlog_rewrite(G()->td_db()->get_binlog(), web_page->log_event_id, LogEvent::HandlerType::WebPages, storer);
     }
   }
 
@@ -1540,7 +1543,7 @@ void WebPagesManager::on_binlog_web_page_event(BinlogEvent &&event) {
   auto web_page = std::move(log_event.web_page_out);
   CHECK(web_page != nullptr);
 
-  web_page->logevent_id = event.id_;
+  web_page->log_event_id = event.id_;
 
   update_web_page(std::move(web_page), web_page_id, true, false);
 }
@@ -1561,13 +1564,13 @@ void WebPagesManager::on_save_web_page_to_database(WebPageId web_page_id, bool s
 
   if (!success) {
     LOG(ERROR) << "Failed to save " << web_page_id << " to database";
-    save_web_page(web_page, web_page_id, web_page->logevent_id != 0);
+    save_web_page(web_page, web_page_id, web_page->log_event_id != 0);
   } else {
     LOG(INFO) << "Successfully saved " << web_page_id << " to database";
-    if (web_page->logevent_id != 0) {
+    if (web_page->log_event_id != 0) {
       LOG(INFO) << "Erase " << web_page_id << " from binlog";
-      binlog_erase(G()->td_db()->get_binlog(), web_page->logevent_id);
-      web_page->logevent_id = 0;
+      binlog_erase(G()->td_db()->get_binlog(), web_page->log_event_id);
+      web_page->log_event_id = 0;
     }
   }
 }

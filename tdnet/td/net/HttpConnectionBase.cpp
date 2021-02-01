@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -188,6 +188,14 @@ void HttpConnectionBase::loop() {
         << "Close connection while reading request/response";
     return stop();
   }
+}
+
+void HttpConnectionBase::on_start_migrate(int32 sched_id) {
+  Scheduler::unsubscribe(fd_.get_poll_info().get_pollable_fd_ref());
+}
+
+void HttpConnectionBase::on_finish_migrate() {
+  Scheduler::subscribe(fd_.get_poll_info().extract_pollable_fd(this));
 }
 
 }  // namespace detail

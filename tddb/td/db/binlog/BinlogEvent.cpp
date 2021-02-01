@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -68,6 +68,13 @@ BufferSlice BinlogEvent::create_raw(uint64 id, int32 type, int32 flags, const St
   tl_storer.store_int(::td::crc32(raw_event.as_slice().truncate(raw_event.size() - TAIL_SIZE)));
 
   return raw_event;
+}
+
+void BinlogEvent::realloc() {
+  auto data_offset = data_.begin() - raw_event_.as_slice().begin();
+  auto data_size = data_.size();
+  raw_event_ = raw_event_.copy();
+  data_ = raw_event_.as_slice().substr(data_offset, data_size);
 }
 
 }  // namespace td

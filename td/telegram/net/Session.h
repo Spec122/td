@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -25,9 +25,11 @@
 #include "td/utils/List.h"
 #include "td/utils/Status.h"
 #include "td/utils/StringBuilder.h"
+#include "td/utils/VectorQueue.h"
 
 #include <array>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <unordered_map>
@@ -124,7 +126,15 @@ class Session final
 
   // Do not invalidate iterators of these two containers!
   // TODO: better data structures
-  std::deque<NetQueryPtr> pending_queries_;
+  struct PriorityQueue {
+    void push(NetQueryPtr query);
+    NetQueryPtr pop();
+    bool empty() const;
+
+   private:
+    std::map<int8, VectorQueue<NetQueryPtr>, std::greater<>> queries_;
+  };
+  PriorityQueue pending_queries_;
   std::map<uint64, Query> sent_queries_;
   std::deque<NetQueryPtr> pending_invoke_after_queries_;
   ListNode sent_queries_list_;

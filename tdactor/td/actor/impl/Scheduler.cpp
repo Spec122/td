@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -13,6 +13,7 @@
 #include "td/actor/impl/EventFull.h"
 
 #include "td/utils/common.h"
+#include "td/utils/ExitGuard.h"
 #include "td/utils/format.h"
 #include "td/utils/List.h"
 #include "td/utils/logging.h"
@@ -22,9 +23,12 @@
 #include "td/utils/Time.h"
 
 #include <functional>
+#include <iterator>
 #include <utility>
 
 namespace td {
+
+int VERBOSITY_NAME(actor) = VERBOSITY_NAME(DEBUG) + 10;
 
 TD_THREAD_LOCAL Scheduler *Scheduler::scheduler_;   // static zero-initialized
 TD_THREAD_LOCAL ActorContext *Scheduler::context_;  // static zero-initialized
@@ -108,6 +112,7 @@ void Scheduler::ServiceActor::tear_down() {
 /*** SchedlerGuard ***/
 SchedulerGuard::SchedulerGuard(Scheduler *scheduler, bool lock) : scheduler_(scheduler) {
   if (lock) {
+    // the next check can fail if OS killed the scheduler's thread without releasing the guard
     CHECK(!scheduler_->has_guard_);
     scheduler_->has_guard_ = true;
   }
@@ -237,11 +242,9 @@ void Scheduler::clear() {
     auto actor_info = ActorInfo::from_list_node(ready_actors_list_.get());
     do_stop_actor(actor_info);
   }
-  LOG_IF(FATAL, !ready_actors_list_.empty()) << ActorInfo::from_list_node(ready_actors_list_.next)->get_name();
-  CHECK(ready_actors_list_.empty());
   poll_.clear();
 
-  if (callback_) {
+  if (callback_ && !ExitGuard::is_exited()) {
     // can't move lambda with unique_ptr inside into std::function
     auto ptr = actor_info_pool_.release();
     callback_->register_at_finish([ptr] { delete ptr; });
@@ -285,7 +288,7 @@ void Scheduler::do_event(ActorInfo *actor_info, Event &&event) {
       UNREACHABLE();
       break;
   }
-  // can't clear event here. It may be already destroyed during destory_actor
+  // can't clear event here. It may be already destroyed during destroy_actor
 }
 
 void Scheduler::register_migrated_actor(ActorInfo *actor_info) {
@@ -302,8 +305,8 @@ void Scheduler::register_migrated_actor(ActorInfo *actor_info) {
   }
   auto it = pending_events_.find(actor_info);
   if (it != pending_events_.end()) {
-    actor_info->mailbox_.insert(actor_info->mailbox_.end(), make_move_iterator(begin(it->second)),
-                                make_move_iterator(end(it->second)));
+    actor_info->mailbox_.insert(actor_info->mailbox_.end(), std::make_move_iterator(it->second.begin()),
+                                std::make_move_iterator(it->second.end()));
     pending_events_.erase(it);
   }
   if (actor_info->mailbox_.empty()) {

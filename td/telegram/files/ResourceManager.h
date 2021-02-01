@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -17,6 +17,7 @@
 #include <utility>
 
 namespace td {
+
 class ResourceManager : public Actor {
  public:
   enum class Mode : int32 { Baseline, Greedy };
@@ -27,6 +28,8 @@ class ResourceManager : public Actor {
   void update_resources(const ResourceState &resource_state);
 
   void register_worker(ActorShared<FileLoaderActor> callback, int8 priority);
+
+  static constexpr int64 MAX_RESOURCE_LIMIT = 1 << 21;
 
  private:
   Mode mode_;
@@ -62,4 +65,5 @@ class ResourceManager : public Actor {
   void add_node(NodeId node_id, int8 priority);
   bool remove_node(NodeId node_id);
 };
+
 }  // namespace td

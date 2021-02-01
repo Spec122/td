@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -63,7 +63,8 @@ NetQueryPtr NetQueryCreator::create(uint64 id, const telegram_api::Function &fun
         total_timeout_limit = 8;
       }
       if ((auth_manager == nullptr || !auth_manager->was_authorized()) && auth_flag == NetQuery::AuthFlag::On &&
-          tl_constructor != telegram_api::auth_exportAuthorization::ID) {
+          tl_constructor != telegram_api::auth_exportAuthorization::ID &&
+          tl_constructor != telegram_api::auth_bindTempAuthKey::ID) {
         LOG(ERROR) << "Send query before authorization: " << to_string(function);
       }
     }

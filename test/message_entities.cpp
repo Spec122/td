@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -964,7 +964,7 @@ TEST(MessageEntities, fix_formatted_text) {
                             {td::MessageEntity::Type::Italic, 2, 11}});
 
   for (size_t test_n = 0; test_n < 100000; test_n++) {
-    bool is_url = td::Random::fast(0, 1) == 1;
+    bool is_url = td::Random::fast_bool();
     td::int32 url_offset = 0;
     td::int32 url_end = 0;
     if (is_url) {

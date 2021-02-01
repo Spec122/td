@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -14,6 +14,7 @@
 #include "td/telegram/files/FileManager.h"
 #include "td/telegram/net/DcId.h"
 
+#include "td/utils/algorithm.h"
 #include "td/utils/base64.h"
 #include "td/utils/common.h"
 #include "td/utils/format.h"
@@ -28,18 +29,18 @@
 
 namespace td {
 
-static uint16 get_dimension(int32 size) {
+static uint16 get_dimension(int32 size, const char *source) {
   if (size < 0 || size > 65535) {
-    LOG(ERROR) << "Wrong image dimension = " << size;
+    LOG(ERROR) << "Wrong image dimension = " << size << " from " << source;
     return 0;
   }
   return narrow_cast<uint16>(size);
 }
 
-Dimensions get_dimensions(int32 width, int32 height) {
+Dimensions get_dimensions(int32 width, int32 height, const char *source) {
   Dimensions result;
-  result.width = get_dimension(width);
-  result.height = get_dimension(height);
+  result.width = get_dimension(width, source);
+  result.height = get_dimension(height, source);
   if (result.width == 0 || result.height == 0) {
     result.width = 0;
     result.height = 0;
@@ -337,12 +338,12 @@ PhotoSize get_secret_thumbnail_photo_size(FileManager *file_manager, BufferSlice
   }
   PhotoSize res;
   res.type = 't';
-  res.dimensions = get_dimensions(width, height);
+  res.dimensions = get_dimensions(width, height, "get_secret_thumbnail_photo_size");
   res.size = narrow_cast<int32>(bytes.size());
 
   // generate some random remote location to save
   auto dc_id = DcId::invalid();
-  auto local_id = Random::secure_int32();
+  auto local_id = -(Random::secure_int32() & 0x7FFFFFFF);
   auto volume_id = Random::secure_int64();
 
   res.file_id = file_manager->register_remote(
@@ -358,7 +359,7 @@ PhotoSize get_secret_thumbnail_photo_size(FileManager *file_manager, BufferSlice
 Variant<PhotoSize, string> get_photo_size(FileManager *file_manager, PhotoSizeSource source, int64 id,
                                           int64 access_hash, std::string file_reference, DcId dc_id,
                                           DialogId owner_dialog_id, tl_object_ptr<telegram_api::PhotoSize> &&size_ptr,
-                                          PhotoFormat format) {
+                                          PhotoFormat format, bool expect_jpeg_minithumbnail) {
   CHECK(size_ptr != nullptr);
 
   tl_object_ptr<telegram_api::fileLocationToBeDeprecated> location;
@@ -373,7 +374,7 @@ Variant<PhotoSize, string> get_photo_size(FileManager *file_manager, PhotoSizeSo
 
       type = std::move(size->type_);
       location = std::move(size->location_);
-      res.dimensions = get_dimensions(size->w_, size->h_);
+      res.dimensions = get_dimensions(size->w_, size->h_, "photoSize");
       res.size = size->size_;
 
       break;
@@ -384,7 +385,7 @@ Variant<PhotoSize, string> get_photo_size(FileManager *file_manager, PhotoSizeSo
       type = std::move(size->type_);
       location = std::move(size->location_);
       CHECK(size->bytes_.size() <= static_cast<size_t>(std::numeric_limits<int32>::max()));
-      res.dimensions = get_dimensions(size->w_, size->h_);
+      res.dimensions = get_dimensions(size->w_, size->h_, "photoCachedSize");
       res.size = static_cast<int32>(size->bytes_.size());
 
       content = std::move(size->bytes_);
@@ -393,6 +394,36 @@ Variant<PhotoSize, string> get_photo_size(FileManager *file_manager, PhotoSizeSo
     }
     case telegram_api::photoStrippedSize::ID: {
       auto size = move_tl_object_as<telegram_api::photoStrippedSize>(size_ptr);
+      if (!expect_jpeg_minithumbnail) {
+        LOG(ERROR) << "Receive unexpected JPEG minithumbnail";
+        return std::move(res);
+      }
+      return size->bytes_.as_slice().str();
+    }
+    case telegram_api::photoSizeProgressive::ID: {
+      auto size = move_tl_object_as<telegram_api::photoSizeProgressive>(size_ptr);
+
+      if (size->sizes_.empty()) {
+        LOG(ERROR) << "Receive " << to_string(size);
+        return std::move(res);
+      }
+      std::sort(size->sizes_.begin(), size->sizes_.end());
+
+      type = std::move(size->type_);
+      location = std::move(size->location_);
+      res.dimensions = get_dimensions(size->w_, size->h_, "photoSizeProgressive");
+      res.size = size->sizes_.back();
+      size->sizes_.pop_back();
+      res.progressive_sizes = std::move(size->sizes_);
+
+      break;
+    }
+    case telegram_api::photoPathSize::ID: {
+      auto size = move_tl_object_as<telegram_api::photoPathSize>(size_ptr);
+      if (expect_jpeg_minithumbnail) {
+        LOG(ERROR) << "Receive unexpected SVG minithumbnail";
+        return std::move(res);
+      }
       return size->bytes_.as_slice().str();
     }
     default:
@@ -429,7 +460,7 @@ AnimationSize get_animation_size(FileManager *file_manager, PhotoSizeSource sour
     LOG(ERROR) << "Wrong videoSize \"" << size->type_ << "\" in " << to_string(size);
   }
   res.type = static_cast<uint8>(size->type_[0]);
-  res.dimensions = get_dimensions(size->w_, size->h_);
+  res.dimensions = get_dimensions(size->w_, size->h_, "get_animation_size");
   res.size = size->size_;
   if ((size->flags_ & telegram_api::videoSize::VIDEO_START_TS_MASK) != 0) {
     res.main_frame_timestamp = size->video_start_ts_;
@@ -503,7 +534,7 @@ PhotoSize get_web_document_photo_size(FileManager *file_manager, FileType file_t
     switch (attribute->get_id()) {
       case telegram_api::documentAttributeImageSize::ID: {
         auto image_size = move_tl_object_as<telegram_api::documentAttributeImageSize>(attribute);
-        dimensions = get_dimensions(image_size->w_, image_size->h_);
+        dimensions = get_dimensions(image_size->w_, image_size->h_, "web documentAttributeImageSize");
         break;
       }
       case telegram_api::documentAttributeAnimated::ID:
@@ -551,7 +582,8 @@ static tl_object_ptr<td_api::photoSize> get_photo_size_object(FileManager *file_
   return td_api::make_object<td_api::photoSize>(
       photo_size->type ? std::string(1, static_cast<char>(photo_size->type))
                        : std::string(),  // TODO replace string type with integer type
-      file_manager->get_file_object(photo_size->file_id), photo_size->dimensions.width, photo_size->dimensions.height);
+      file_manager->get_file_object(photo_size->file_id), photo_size->dimensions.width, photo_size->dimensions.height,
+      vector<int32>(photo_size->progressive_sizes));
 }
 
 static vector<td_api::object_ptr<td_api::photoSize>> get_photo_sizes_object(FileManager *file_manager,
@@ -559,18 +591,22 @@ static vector<td_api::object_ptr<td_api::photoSize>> get_photo_sizes_object(File
   auto sizes = transform(photo_sizes, [file_manager](const PhotoSize &photo_size) {
     return get_photo_size_object(file_manager, &photo_size);
   });
-  std::sort(sizes.begin(), sizes.end(), [](const auto &lhs, const auto &rhs) {
+  std::stable_sort(sizes.begin(), sizes.end(), [](const auto &lhs, const auto &rhs) {
     if (lhs->photo_->expected_size_ != rhs->photo_->expected_size_) {
       return lhs->photo_->expected_size_ < rhs->photo_->expected_size_;
     }
     return static_cast<uint32>(lhs->width_) * static_cast<uint32>(lhs->height_) <
            static_cast<uint32>(rhs->width_) * static_cast<uint32>(rhs->height_);
   });
+  td::remove_if(sizes, [](const auto &size) {
+    return !size->photo_->local_->can_be_downloaded_ && !size->photo_->local_->is_downloading_completed_;
+  });
   return sizes;
 }
 
 bool operator==(const PhotoSize &lhs, const PhotoSize &rhs) {
-  return lhs.type == rhs.type && lhs.dimensions == rhs.dimensions && lhs.size == rhs.size && lhs.file_id == rhs.file_id;
+  return lhs.type == rhs.type && lhs.dimensions == rhs.dimensions && lhs.size == rhs.size &&
+         lhs.file_id == rhs.file_id && lhs.progressive_sizes == rhs.progressive_sizes;
 }
 
 bool operator!=(const PhotoSize &lhs, const PhotoSize &rhs) {
@@ -599,7 +635,8 @@ bool operator<(const PhotoSize &lhs, const PhotoSize &rhs) {
 
 StringBuilder &operator<<(StringBuilder &string_builder, const PhotoSize &photo_size) {
   return string_builder << "{type = " << photo_size.type << ", dimensions = " << photo_size.dimensions
-                        << ", size = " << photo_size.size << ", file_id = " << photo_size.file_id << "}";
+                        << ", size = " << photo_size.size << ", file_id = " << photo_size.file_id
+                        << ", progressive_sizes = " << photo_size.progressive_sizes << "}";
 }
 
 static tl_object_ptr<td_api::animatedChatPhoto> get_animated_chat_photo_object(FileManager *file_manager,
@@ -647,7 +684,7 @@ Photo get_encrypted_file_photo(FileManager *file_manager, tl_object_ptr<telegram
 
   PhotoSize s;
   s.type = 'i';
-  s.dimensions = get_dimensions(photo->w_, photo->h_);
+  s.dimensions = get_dimensions(photo->w_, photo->h_, "get_encrypted_file_photo");
   s.size = photo->size_;
   s.file_id = file_id;
   res.photos.push_back(s);
@@ -680,7 +717,7 @@ Photo get_photo(FileManager *file_manager, tl_object_ptr<telegram_api::photo> &&
   for (auto &size_ptr : photo->sizes_) {
     auto photo_size = get_photo_size(file_manager, {FileType::Photo, 0}, photo->id_, photo->access_hash_,
                                      photo->file_reference_.as_slice().str(), dc_id, owner_dialog_id,
-                                     std::move(size_ptr), PhotoFormat::Jpeg);
+                                     std::move(size_ptr), PhotoFormat::Jpeg, true);
     if (photo_size.get_offset() == 0) {
       PhotoSize &size = photo_size.get<0>();
       if (size.type == 0 || size.type == 't' || size.type == 'i' || size.type == 'u' || size.type == 'v') {
@@ -933,6 +970,15 @@ tl_object_ptr<telegram_api::userProfilePhoto> convert_photo_to_profile_photo(
       }
       case telegram_api::photoStrippedSize::ID:
         break;
+      case telegram_api::photoSizeProgressive::ID: {
+        auto size = static_cast<const telegram_api::photoSizeProgressive *>(size_ptr.get());
+        if (size->type_ == "a") {
+          photo_small = copy_location(size->location_);
+        } else if (size->type_ == "c") {
+          photo_big = copy_location(size->location_);
+        }
+        break;
+      }
       default:
         UNREACHABLE();
         break;

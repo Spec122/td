@@ -1,11 +1,12 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 #include "td/utils/logging.h"
 
+#include "td/utils/ExitGuard.h"
 #include "td/utils/port/Clocks.h"
 #include "td/utils/port/StdStreams.h"
 #include "td/utils/port/thread_local.h"
@@ -29,16 +30,6 @@
 
 namespace td {
 
-int VERBOSITY_NAME(net_query) = VERBOSITY_NAME(INFO);
-int VERBOSITY_NAME(td_requests) = VERBOSITY_NAME(INFO);
-int VERBOSITY_NAME(dc) = VERBOSITY_NAME(DEBUG) + 2;
-int VERBOSITY_NAME(files) = VERBOSITY_NAME(DEBUG) + 2;
-int VERBOSITY_NAME(mtproto) = VERBOSITY_NAME(DEBUG) + 7;
-int VERBOSITY_NAME(raw_mtproto) = VERBOSITY_NAME(DEBUG) + 10;
-int VERBOSITY_NAME(fd) = VERBOSITY_NAME(DEBUG) + 9;
-int VERBOSITY_NAME(actor) = VERBOSITY_NAME(DEBUG) + 10;
-int VERBOSITY_NAME(sqlite) = VERBOSITY_NAME(DEBUG) + 10;
-
 LogOptions log_options;
 
 TD_THREAD_LOCAL const char *Logger::tag_ = nullptr;
@@ -51,6 +42,9 @@ Logger::Logger(LogInterface &log, const LogOptions &options, int log_level, Slic
     return;
   }
   if (!options_.add_info) {
+    return;
+  }
+  if (ExitGuard::is_exited()) {
     return;
   }
 
@@ -114,6 +108,9 @@ Logger::Logger(LogInterface &log, const LogOptions &options, int log_level, Slic
 }
 
 Logger::~Logger() {
+  if (ExitGuard::is_exited()) {
+    return;
+  }
   if (options_.fix_newlines) {
     sb_ << '\n';
     auto slice = as_cslice();
@@ -162,7 +159,7 @@ TsCerr &TsCerr::operator<<(Slice slice) {
 }
 
 void TsCerr::enterCritical() {
-  while (lock_.test_and_set(std::memory_order_acquire)) {
+  while (lock_.test_and_set(std::memory_order_acquire) && !ExitGuard::is_exited()) {
     // spin
   }
 }
@@ -171,6 +168,16 @@ void TsCerr::exitCritical() {
   lock_.clear(std::memory_order_release);
 }
 TsCerr::Lock TsCerr::lock_ = ATOMIC_FLAG_INIT;
+
+void TsLog::enter_critical() {
+  while (lock_.test_and_set(std::memory_order_acquire) && !ExitGuard::is_exited()) {
+    // spin
+  }
+}
+
+void TsLog::exit_critical() {
+  lock_.clear(std::memory_order_release);
+}
 
 class DefaultLog : public LogInterface {
  public:
@@ -196,19 +203,19 @@ class DefaultLog : public LogInterface {
 #elif TD_TIZEN
     switch (log_level) {
       case VERBOSITY_NAME(FATAL):
-        dlog_print(DLOG_ERROR, DLOG_TAG, slice.c_str());
+        dlog_print(DLOG_ERROR, DLOG_TAG, "%s", slice.c_str());
         break;
       case VERBOSITY_NAME(ERROR):
-        dlog_print(DLOG_ERROR, DLOG_TAG, slice.c_str());
+        dlog_print(DLOG_ERROR, DLOG_TAG, "%s", slice.c_str());
         break;
       case VERBOSITY_NAME(WARNING):
-        dlog_print(DLOG_WARN, DLOG_TAG, slice.c_str());
+        dlog_print(DLOG_WARN, DLOG_TAG, "%s", slice.c_str());
         break;
       case VERBOSITY_NAME(INFO):
-        dlog_print(DLOG_INFO, DLOG_TAG, slice.c_str());
+        dlog_print(DLOG_INFO, DLOG_TAG, "%s", slice.c_str());
         break;
       default:
-        dlog_print(DLOG_DEBUG, DLOG_TAG, slice.c_str());
+        dlog_print(DLOG_DEBUG, DLOG_TAG, "%s", slice.c_str());
         break;
     }
 #elif TD_EMSCRIPTEN
@@ -299,5 +306,7 @@ ScopedDisableLog::~ScopedDisableLog() {
     set_verbosity_level(sdl_verbosity);
   }
 }
+
+static ExitGuard exit_guard;
 
 }  // namespace td

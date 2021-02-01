@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -10,6 +10,7 @@
 
 #include "td/utils/format.h"
 #include "td/utils/logging.h"
+#include "td/utils/misc.h"
 #include "td/utils/Time.h"
 
 namespace td {
@@ -37,7 +38,8 @@ void NetQueryStats::dump_pending_network_queries() {
       }
       const NetQueryDebug &debug = cur->get_data_unsafe();
       const NetQuery &nq = *static_cast<const NetQuery *>(cur);
-      LOG(WARNING) << tag("user", debug.my_id_) << nq << tag("total flood", format::as_time(nq.total_timeout_))
+      LOG(WARNING) << tag("user", lpad(PSTRING() << debug.my_id_, 10, ' ')) << nq
+                   << tag("total flood", format::as_time(nq.total_timeout_))
                    << tag("since start", format::as_time(Time::now_cached() - debug.start_timestamp_))
                    << tag("state", debug.state_)
                    << tag("in this state", format::as_time(Time::now_cached() - debug.state_timestamp_))

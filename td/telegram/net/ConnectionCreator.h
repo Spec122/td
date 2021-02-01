@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2020
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -103,6 +103,7 @@ class ConnectionCreator : public NetQueryCallback {
   bool network_flag_ = false;
   uint32 network_generation_ = 0;
   bool online_flag_ = false;
+  bool is_logging_out_ = false;
   bool is_inited_ = false;
 
   static constexpr int32 MAX_PROXY_LAST_USED_SAVE_DELAY = 60;
@@ -146,6 +147,7 @@ class ConnectionCreator : public NetQueryCallback {
     void add_session_id(int64 session_id);
 
     Backoff backoff;
+    FloodControlStrict sanity_flood_control;
     FloodControlStrict flood_control;
     FloodControlStrict flood_control_online;
     FloodControlStrict mtproto_error_flood_control;
@@ -211,6 +213,7 @@ class ConnectionCreator : public NetQueryCallback {
 
   void on_network(bool network_flag, uint32 network_generation);
   void on_online(bool online_flag);
+  void on_logging_out(bool is_logging_out);
 
   static void update_mtproto_header(const Proxy &proxy);
 
